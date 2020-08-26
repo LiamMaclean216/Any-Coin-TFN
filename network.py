@@ -94,7 +94,7 @@ class VSN(torch.nn.Module):
         #linearise continuous inputs
         linearised = []
         for idx, fc in enumerate(self.linearise):
-            linearised.append(fc(x_cont[:,:,idx]))
+            linearised.append(fc(x_cont[..., -2, :]))
         
         #entity embeddings for discrete inputs
         embedded = []
@@ -115,7 +115,6 @@ class VSN(torch.nn.Module):
             vs_weights = self.vs_grn(vectorised_vars.flatten(start_dim = -2)) #(batch_size, seq_len, n_variables)
         else:
             vs_weights = self.vs_grn(vectorised_vars.flatten(start_dim = -2), c) #(batch_size, seq_len, n_variables)
-            
             
         vs_weights = torch.softmax(vs_weights, dim = -1).unsqueeze(-1) #(batch_size, seq_len, n_variables, 1)
         
@@ -142,7 +141,6 @@ class LSTMLayer(torch.nn.Module):
         if(self.hidden is None):
             raise Exception("Call reset() to initialise LSTM Layer")
             
-            
         x, self.hidden = self.lstm(x, self.hidden)
         x = self.dropout(x)
         
@@ -155,12 +153,13 @@ class LSTMLayer(torch.nn.Module):
             else:
                 dtype = torch.cuda.FloatTensor
 
-
             self.hidden = (torch.zeros([self.n_layers, batch_size, self.dim_model]).type(dtype)
                            , torch.zeros([self.n_layers, batch_size, self.dim_model]).type(dtype))
         else:
             self.hidden = hidden
 
+            
+            
 class TFN(torch.nn.Module):
     def __init__(self, n_var_past_cont, n_var_future_cont, n_var_past_disc, n_var_future_disc, n_var_static_disc
                  , dim_model, n_quantiles = 3, dropout_r = 0.1, n_lstm_layers = 1, n_attention_layers = 1, n_heads = 4):
@@ -193,15 +192,17 @@ class TFN(torch.nn.Module):
         self.dropout = nn.Dropout(dropout_r)
         self.fc_out = nn.Linear(dim_model, n_quantiles)
         
-    #takes input (batch_size, past_seq_len, n_variables_past)
+    #takes input (batch_size * n_coins, past_seq_len, n_variables_past)
     #, (batch_size, future_seq_len, n_variables_future)
-    def forward(self, x_past_cont, x_past_disc, x_future_cont, x_future_disc, x_static_disc):
+    def forward(self, x_past_cont, x_past_disc, x_future_cont, x_future_disc, x_static_disc, n_coins = 1):
+        
+        
         #Static variable encoding
         x_static, _ = self.static_encoder(None, x_static_disc)
         
         #Encoder
-        enc_hidden_init = x_static[0].transpose(1,0).repeat([self.n_lstm_layers, 1, 1])
-        enc_cell_init = x_static[1].transpose(1,0).repeat([self.n_lstm_layers, 1, 1])
+        enc_hidden_init = x_static[0].transpose(1,0).repeat_interleave(self.n_lstm_layers, dim = 0)
+        enc_cell_init = x_static[1].transpose(1,0).repeat_interleave(self.n_lstm_layers, dim = 0)
         
         self.enc.reset(x_past_cont.shape[0], gpu = True, hidden = (enc_hidden_init, enc_cell_init))
         
@@ -227,10 +228,14 @@ class TFN(torch.nn.Module):
         attention_res = x_future
         x = self.static_enrich_grn(x, x_static[3])
         
-        #attention layer
+        #attention layer (accross all coins)
+        x = x.view((x.shape[0] // n_coins, n_coins * x.shape[1], x.shape[2]))
+        
         a = self.attention[0][1](self.attention[0][0](x) + x) 
         for at in self.attention[1:]:
             a = at[1](at[0](a) + a)
+        
+        a = a.view((x.shape[0] * n_coins, x.shape[1] // n_coins, x.shape[2]))
         
         x_future = self.norm2(a[:, x_past.shape[1]:] + x_future)
         
@@ -238,10 +243,25 @@ class TFN(torch.nn.Module):
         x_future = self.norm3(a + x_future + attention_res)
         
         net_out = self.fc_out(x_future)
+        #net_out = net_out.view((net_out.shape[0] // n_coins, n_coins , net_out.shape[1], net_out.shape[2]))
+        
         return net_out, vs_weights
     
     def reset(self, batch_size, gpu = True):
         self.batch_size = batch_size
         #self.enc.reset(batch_size, gpu)
         #self.dec.reset(batch_size, gpu)        
-    
+
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        

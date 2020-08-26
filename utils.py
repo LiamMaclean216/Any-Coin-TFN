@@ -79,25 +79,59 @@ def QuantileLoss(net_out, Y, q):
     return (q * F.relu(net_out - Y)) + ((1 - q) * F.relu(Y - net_out))
 
 from data import one_hot
-def forward_pass(model, data_gen, batch_size, quantiles, gpu = True):
+def forward_pass(model, data_gen, batch_size, quantiles, indexer = None, gpu = True, one_hot_lens = [24, 31, 12]):
+    if(type(data_gen) != type([])):
+        data_gen = [data_gen]
+    
+    
     model.reset(batch_size, gpu = gpu)
-    static = [torch.zeros([batch_size, 1, 10]).float().cuda()]
-
-
-    #Get input and target data, one-hot encode discrete variables, continuous variables have already been normalized
-    #start_time = time.time()
-    in_seq_continuous, in_seq_discrete, future_in_seq_discrete, target_seq  = next(data_gen)
+    #static = [torch.zeros([batch_size * len(data_gen), 1, 10]).float().cuda()]
+    static = torch.arange(0,len(data_gen)).unsqueeze(0).repeat(batch_size,1).transpose(1,0).flatten()
+    static = static.unsqueeze(-1).unsqueeze(-1).float().cuda()
+    static = one_hot(static, [5])
+    #print(static.shape)
     
+    in_seq_continuous, in_seq_discrete, future_in_seq_discrete, target_seq  = next(data_gen[0])
     
-    #print("--- %s seconds ---" % (time.time() - start_time))
+    for gen in data_gen[1:]:
+        n0, n1, n2, n3  = next(gen)
+            
+        in_seq_continuous = np.concatenate((in_seq_continuous, n0), 0)
+        in_seq_discrete = np.concatenate((in_seq_discrete, n1), 0)
+        future_in_seq_discrete = np.concatenate((future_in_seq_discrete, n2), 0)
+        target_seq = np.concatenate((target_seq, n3), 0)
+                                           
+                                           
+    if(not gpu):
+        dtype = torch.FloatTensor
+    else:
+        dtype = torch.cuda.FloatTensor
     
-    in_seq_discrete = one_hot(in_seq_discrete, [24, 31, 12])
-    future_in_seq_discrete = one_hot(future_in_seq_discrete, [24, 31, 12])
+    in_seq_continuous = torch.tensor(in_seq_continuous).type(dtype).unsqueeze(-1)
+    in_seq_discrete =  one_hot(torch.tensor(in_seq_discrete).type(dtype), one_hot_lens)
+    future_in_seq_discrete = one_hot(torch.tensor(future_in_seq_discrete).type(dtype), one_hot_lens)
+    target_seq = torch.tensor(target_seq).type(dtype)
     
     #forward pass
-    net_out, vs_weights = model(in_seq_continuous, in_seq_discrete, None,  future_in_seq_discrete, static)
-    loss = torch.mean(QuantileLoss(net_out, target_seq ,quantiles))
+    net_out, vs_weights = model(in_seq_continuous, in_seq_discrete, None,
+                                future_in_seq_discrete, static, n_coins = len(data_gen))
     
     
-    return loss, net_out, vs_weights, (in_seq_continuous, in_seq_discrete, future_in_seq_discrete, target_seq)
+    loss = torch.mean(QuantileLoss(net_out, target_seq ,quantiles), dim = -1)
+    loss = loss.reshape([batch_size, len(data_gen), loss.shape[-1]])
+    loss = torch.mean(loss, dim = -1)
+    coin_losses = torch.mean(loss, dim = 0)
+    loss = torch.mean(loss, dim = -1)
+    if not (indexer is None):
+        indexer.next(loss.cpu().detach().numpy())
+    #loss = torch.mean(loss)
+    
+    
+    
+    #start_time = time.time()    
+    #print("--- %s seconds ---" % (time.time() - start_time))
+    return coin_losses, net_out, vs_weights, (in_seq_continuous, in_seq_discrete, future_in_seq_discrete, target_seq)
+    #return (in_seq_continuous, in_seq_discrete, future_in_seq_discrete, target_seq)
+    
+
 

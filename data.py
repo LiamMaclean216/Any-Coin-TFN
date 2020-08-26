@@ -20,20 +20,26 @@ def load_data(year, symbol, con_cols, interval = "1m", normalise = True):
     if(type(symbol) != type([])):
         symbol = [symbol]
     
-    frames = []
-    for y in year:
-        for s in symbol:
-            data = pd.read_csv("data_{}/{}_{}.csv".format(interval, y, s))
-            frames.append(data)    
+    
+    data = []
+    for s in symbol:
+        frames = []
+        for y in year:
+            csv_data = pd.read_csv("data_{}/{}_{}.csv".format(interval, y, s))
+            frames.append(csv_data)    
             
-    data_ = pd.concat(frames)
+        data_ = pd.concat(frames)
+        
+        #convert timestamp into month and day numbers
+        data_['Hour'] = pd.to_datetime(data_["Open Time"], unit='ms').apply(lambda x: x.hour)    
+        data_['Day'] = pd.to_datetime(data_["Open Time"], unit='ms').apply(lambda x: x.day - 1)
+        data_['Month'] = pd.to_datetime(data_["Open Time"], unit='ms').apply(lambda x: x.month - 1)
+        data.append(data_)
     
     print("done")
-    #convert timestamp into month and day numbers
-    data_['Hour'] = pd.to_datetime(data_["Open Time"], unit='ms').apply(lambda x: x.hour)    
-    data_['Day'] = pd.to_datetime(data_["Open Time"], unit='ms').apply(lambda x: x.day - 1)
-    data_['Month'] = pd.to_datetime(data_["Open Time"], unit='ms').apply(lambda x: x.month - 1)
-    return data_
+   
+   
+    return    data
 
 class Indexer():
     def __init__(self, r_bottom, r_top, batch_size, random = True, increment = 1):
@@ -43,9 +49,17 @@ class Indexer():
         self.increment = increment
         self.batch_size = batch_size
         self.indices = [0]
+        self.losses = np.ones([r_top - r_bottom]) * 100
         self.next()
         
-    def next(self):
+    def next(self, losses = None):
+        if losses is not None:
+            self.losses[np.array(self.indices) - self.r_bottom] = losses
+            
+            new_indicies = self.losses.argsort()[-self.batch_size:][::-1] + self.r_bottom
+            self.indices = new_indicies
+            return self.indices
+        
         if(self.random):
             new_indices = []
             for b in range(self.batch_size):
@@ -64,7 +78,7 @@ class Indexer():
             
         return self.indices
     
-def get_batches(data_, in_seq_len, out_seq_len, con_cols, disc_cols, target_cols, batch_size = 1, gpu = True, normalise = True, indexer = None, norm = None):
+def get_batches(data_, in_seq_len, out_seq_len, con_cols, disc_cols, target_cols, one_hot_lens = [24, 31, 12], batch_size = 1, gpu = True, normalise = True, indexer = None, norm = None):
     data = data_.copy()
     
     given_indexer = True
@@ -99,11 +113,11 @@ def get_batches(data_, in_seq_len, out_seq_len, con_cols, disc_cols, target_cols
 
         out_seq= batch_data[:,in_seq_len:in_seq_len + out_seq_len, disc_cols]
         target_seq = batch_data[:,in_seq_len:in_seq_len + out_seq_len, target_cols]
-    
-        yield (torch.tensor(in_seq_continuous).type(dtype).unsqueeze(-1),
-                        torch.tensor(in_seq_discrete).type(dtype),
-                        torch.tensor(out_seq).type(dtype),
-                        torch.tensor(target_seq).type(dtype))
+        
+        yield ((in_seq_continuous),
+                        (in_seq_discrete),
+                        (out_seq),
+                        (target_seq))
         
         if(not given_indexer):
             indexer.next()
