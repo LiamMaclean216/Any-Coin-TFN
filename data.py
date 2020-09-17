@@ -13,13 +13,12 @@ import plotly.graph_objects as go
 header = {'open time' : 1, 'open' : 2, 'high' : 3, 'low' : 4, 'close' : 5}
 
 #load_data from file
-def load_data(year, symbol, con_cols, interval = "1m", normalise = True):
+def load_data(year, symbol, interval = "1m", normalise = True):
     if(type(year) != type([])):
         year = [year]
     
     if(type(symbol) != type([])):
         symbol = [symbol]
-    
     
     data = []
     for s in symbol:
@@ -37,9 +36,10 @@ def load_data(year, symbol, con_cols, interval = "1m", normalise = True):
         data.append(data_)
     
     print("done")
-   
-   
-    return    data
+    return data
+
+def softmax(x, dim = 0):
+    return np.exp(x) / np.sum(np.exp(x), axis=dim)
 
 class Indexer():
     def __init__(self, r_bottom, r_top, batch_size, random = True, increment = 1):
@@ -53,28 +53,32 @@ class Indexer():
         self.next()
         
     def next(self, losses = None):
-        if losses is not None:
-            self.losses[np.array(self.indices) - self.r_bottom] = losses
-            
-            new_indicies = self.losses.argsort()[-self.batch_size:][::-1] + self.r_bottom
-            self.indices = new_indicies
-            return self.indices
-        
         if(self.random):
+#             if (losses is not None):
+#                 self.losses[np.array(self.indices) - self.r_bottom] = losses
+#                 #new_indicies = self.losses.argsort()[-self.batch_size:][::-1] + self.r_bottom
+#                 #self.indices = new_indicies
+
+#                 new_indicies = np.arange(self.r_bottom, self.r_top)
+#                 self.indices = np.random.choice(new_indicies , self.batch_size, p = softmax(self.losses ** (1/4), -1))
+#                 return self.indices
+                
+            ####    
             new_indices = []
             for b in range(self.batch_size):
                 new_indices.append(random.randrange(self.r_bottom, self.r_top))
             self.indices = new_indices
         else:
-            new_indices = [self.indices[-1]]
+#             new_indices = [self.indices[-1]]
             
-            for b in range(1, self.batch_size):
-                i = new_indices[-1] + self.increment
-                if(i >= self.r_top):
-                    new_indices.append((i - self.top) + self.r_bottom)
-                else:
-                    new_indices.append(i)
-            self.indices = new_indices
+#             for b in range(1, self.batch_size):
+#                 i = new_indices[-1] + self.increment
+#                 if(i >= self.r_top):
+#                     new_indices.append((i - self.top) + self.r_bottom)
+#                 else:
+#                     new_indices.append(i)
+#             self.indices = new_indices
+            self.indices = np.arange(self.indices[-1] + self.increment, self.indices[-1] + self.increment + self.batch_size, self.increment)
             
         return self.indices
     
@@ -107,17 +111,17 @@ def get_batches(data_, in_seq_len, out_seq_len, con_cols, disc_cols, target_cols
         batch_data = data.iloc[n.flatten()].values
         batch_data = torch.tensor(batch_data.reshape(batch_size ,in_seq_len + out_seq_len, data.shape[-1]))
         
+        mask = ~torch.isnan(batch_data).any(2)
+        batch_data[~mask] = 0
+        
         #split up batch data
-        in_seq_continuous = batch_data[:,0:in_seq_len, con_cols]
-        in_seq_discrete = batch_data[:,0:in_seq_len, disc_cols]
+        in_seq_continuous = batch_data[:, 0:in_seq_len, con_cols]
+        in_seq_discrete = batch_data[:, 0:in_seq_len, disc_cols]
 
-        out_seq= batch_data[:,in_seq_len:in_seq_len + out_seq_len, disc_cols]
+        out_seq = batch_data[:,in_seq_len:in_seq_len + out_seq_len, disc_cols]
         target_seq = batch_data[:,in_seq_len:in_seq_len + out_seq_len, target_cols]
         
-        yield ((in_seq_continuous),
-                        (in_seq_discrete),
-                        (out_seq),
-                        (target_seq))
+        yield in_seq_continuous, in_seq_discrete, out_seq, target_seq, mask
         
         if(not given_indexer):
             indexer.next()
